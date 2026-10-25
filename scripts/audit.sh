@@ -1,0 +1,441 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Nikita Chernyi <https://rakshazi.me>
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Mechanical audit for an AGENTS.md. Warnings invite human review; --strict turns them into failures.
+set -u
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/audit.sh [--root|--nested] [--strict] [--style] [--extract-commands] [--] [FILE]
+
+Check an agent context file for size limits, credential-shaped values, lint
+leakage, stale relative paths, template placeholders, and bugs described as
+caveats.
+
+  FILE                target file, default AGENTS.md
+  --root              treat FILE as a repo-root file
+  --nested            treat FILE as a package file
+  --strict            exit 1 when any warning fires; use in CI
+  --style             add prose checks: ASCII only, no em or en dash, no contrast negation
+  --extract-commands  print candidate commands and exit; inspect each before running
+  --                  end of options
+
+Backticked paths are checked unless they look like a URL, glob, command, branch
+name, or package scope. A missing path warns; a trailing slash marks a directory.
+
+Exit codes:
+  0  no hard failures, and no warnings under --strict
+  1  hard failure: over 32 KiB (file or chain), a credential-shaped value,
+     or --strict with at least one warning
+  2  bad invocation: missing or unreadable file, unknown flag, extra argument
+
+Examples:
+  scripts/audit.sh
+  scripts/audit.sh --strict AGENTS.md
+  scripts/audit.sh --style --extract-commands AGENTS.md
+  scripts/audit.sh packages/api/AGENTS.md
+EOF
+}
+
+mode=auto
+strict=0
+style=0
+extract=0
+file=""
+endopts=0
+for arg in "$@"; do
+  if (( endopts )); then
+    if [[ -n $file ]]; then
+      printf 'error: one file per run, got a second: %s\n\n' "$arg" >&2
+      usage >&2
+      exit 2
+    fi
+    file=$arg
+    continue
+  fi
+  case $arg in
+    -h|--help) usage; exit 0 ;;
+    --root) mode=root ;;
+    --nested) mode=nested ;;
+    --strict) strict=1 ;;
+    --style) style=1 ;;
+    --extract-commands) extract=1 ;;
+    --) endopts=1 ;;
+    -*) printf 'unknown flag: %s\n\n' "$arg" >&2; usage >&2; exit 2 ;;
+    *)
+      if [[ -n $file ]]; then
+        printf 'error: one file per run, got a second: %s\n\n' "$arg" >&2
+        usage >&2
+        exit 2
+      fi
+      file=$arg
+      ;;
+  esac
+done
+
+file=${file:-AGENTS.md}
+case $file in
+  -*) file=./$file ;;
+esac
+if [[ ! -f $file ]]; then
+  printf 'error: not a file: %s\n\n' "$file" >&2
+  usage >&2
+  exit 2
+fi
+if [[ -L $file ]]; then
+  printf 'error: symlink target refused: %s\n' "$file" >&2
+  exit 2
+fi
+if [[ ! -r $file ]]; then
+  printf 'error: not readable: %s\n' "$file" >&2
+  exit 2
+fi
+if (( extract && strict )); then
+  printf 'error: --strict and --extract-commands cannot be combined\n' >&2
+  exit 2
+fi
+
+status=0
+warnings=0
+# shellcheck disable=SC2016
+tick='`[^`]+`'
+warn() { printf 'warn  %s\n' "$*"; warnings=$((warnings + 1)); }
+soft() { printf '\n%s\n%s\n' "$1" "$2"; warnings=$((warnings + 1)); }
+fail() { printf 'fail  %s\n' "$*"; status=1; }
+
+is_command() {
+  local first=$1 word
+  case $first in
+    ./*|/*) return 0 ;;
+  esac
+  for word in go gofmt golangci-lint staticcheck govulncheck gosec npm npx pnpm yarn bun \
+    node deno tsc eslint prettier jest vitest playwright python python3 pytest uv poetry pip \
+    ruff mypy black isort tox nox cargo rustc rustup make just task docker podman kubectl \
+    helm kustomize terraform tofu ansible mvn gradle gradlew dotnet msbuild swift xcodebuild \
+    flutter dart bundle rake rails composer php phpunit mix elixir lua luacheck bazel bazelisk \
+    cmake meson ninja gcc g++ clang clang-format clang-tidy ctest shellcheck actionlint \
+    hadolint trivy grype semgrep gitleaks sqlc buf protoc swag mockery air dlv bash sh zsh \
+    git gh glab aws gcloud az curl wget jq yq openssl ssh rsync tar unzip zip psql mysql \
+    sqlite3 codegen; do
+    [[ $first == "$word" ]] && return 0
+  done
+  return 1
+}
+
+extract_commands() {
+  local f=$1 line first
+  {
+    awk '/^[[:space:]]*```/ { fence = !fence; next } fence { print }' "$f"
+    grep -oE "$tick" "$f" | sed -e 's/^`//' -e 's/`$//'
+  } | while IFS= read -r line; do
+      line=${line#"${line%%[![:space:]]*}"}
+      line=${line%"${line##*[![:space:]]}"}
+      [[ -z $line ]] && continue
+      case $line in \#*|'}'|'{'|EOF|'```') continue ;; esac
+      case $line in *'<'*'>'*) continue ;; esac
+      first=${line%% *}
+      is_command "$first" || continue
+      printf '%s\n' "$line"
+    done | sort -u
+}
+
+lines=$(wc -l < "$file")
+bytes=$(wc -c < "$file")
+base=${file##*/}
+case $file in
+  */*) dir=${file%/*}; [[ -z $dir ]] && dir=/ ;;
+  *) dir=. ;;
+esac
+here=$(cd "$dir" && pwd -P) || { printf 'error: cannot enter %s\n' "$dir" >&2; exit 2; }
+
+repo=""
+probe=$(pwd -L)
+while :; do
+  if [[ -e $probe/.git ]]; then
+    repo=$(cd "$probe" && pwd -P)
+    break
+  fi
+  parent=$(dirname "$probe")
+  [[ $parent == "$probe" ]] && break
+  probe=$parent
+done
+
+cwd_real=$(pwd -P)
+if [[ -n $repo ]]; then
+  case $here in
+    "$repo"|"$repo"/*) : ;;
+    *)
+      printf 'error: target resolves outside the repository: %s\n' "$here/$base" >&2
+      exit 2
+      ;;
+  esac
+elif [[ $here != "$cwd_real" && $here != "$cwd_real"/* ]]; then
+  printf 'error: target resolves outside the working directory: %s\n' "$here/$base" >&2
+  exit 2
+fi
+
+is_root=0
+case $mode in
+  root) is_root=1 ;;
+  nested) is_root=0 ;;
+  *)
+    if [[ -n $repo ]]; then
+      [[ $here == "$(cd "$repo" && pwd -P)" ]] && is_root=1
+    elif [[ $here == "$(pwd -P)" ]]; then
+      is_root=1
+    fi
+    ;;
+esac
+
+root_refs=$here
+[[ -n $repo ]] && root_refs=$(cd "$repo" && pwd -P)
+
+if (( extract )); then
+  printf '# candidate commands in %s; inspect each before running\n' "$file"
+  extract_commands "$file"
+  exit 0
+fi
+
+chain=$bytes
+chain_count=1
+chain_files=$file
+add_chain() {
+  local p=$1 show
+  [[ -f $p && ! -L $p ]] || return 0
+  [[ $p == "$here/$base" ]] && return 0
+  chain=$((chain + $(wc -c < "$p")))
+  chain_count=$((chain_count + 1))
+  show=$p
+  [[ -n $repo ]] && show=${p#"$repo"/}
+  chain_files="$chain_files $show"
+}
+if [[ -n $repo ]]; then
+  d=$here
+  while :; do
+    if [[ -f $d/AGENTS.override.md ]]; then
+      add_chain "$d/AGENTS.override.md"
+    elif [[ -f $d/AGENTS.md ]]; then
+      add_chain "$d/AGENTS.md"
+    fi
+    [[ $d == "$repo" ]] && break
+    parent=$(dirname "$d")
+    [[ $parent == "$d" ]] && break
+    d=$parent
+  done
+else
+  if [[ -f $here/AGENTS.override.md ]]; then
+    add_chain "$here/AGENTS.override.md"
+  elif [[ -f $here/AGENTS.md ]]; then
+    add_chain "$here/AGENTS.md"
+  fi
+fi
+codex_home=""
+if [[ -n ${CODEX_HOME:-} ]]; then
+  codex_home=$CODEX_HOME
+elif [[ -n ${HOME:-} ]]; then
+  codex_home=$HOME/.codex
+fi
+if [[ -n $codex_home ]]; then
+  if [[ -s $codex_home/AGENTS.override.md ]]; then
+    add_chain "$codex_home/AGENTS.override.md"
+  elif [[ -s $codex_home/AGENTS.md ]]; then
+    add_chain "$codex_home/AGENTS.md"
+  fi
+fi
+
+printf 'file  %s (%s lines, %s bytes)\n' "$file" "$lines" "$bytes"
+printf 'chain %s bytes across %s files: %s\n' "$chain" "$chain_count" "$chain_files"
+if [[ -f $here/AGENTS.override.md && $base == AGENTS.md ]]; then
+  warn "AGENTS.override.md shadows this file; Codex loads only the override in that directory"
+fi
+
+if (( ! is_root && lines > 80 )); then
+  warn "nested file over 80 lines: move procedures to a skill or docs"
+fi
+if (( lines >= 200 )); then
+  warn "at 200+ lines: warning sign; split subtree rules into nested files"
+fi
+if (( bytes > 32768 )); then
+  fail "over 32 KiB: Codex skips files past the combined chain cap"
+  exit 1
+fi
+if (( chain > 32768 )); then
+  fail "combined chain is $chain bytes: Codex skips files past 32 KiB"
+  exit 1
+fi
+
+url_creds=$(grep -nE '://[^/[:space:]]+:[^/[:space:]]+@' "$file" || true)
+if [[ -n $url_creds ]]; then
+  fail "credential inside a URL; keep secrets out of AGENTS.md"
+  printf '%s\n' "$url_creds"
+fi
+
+token_re='gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|(AKIA|ASIA)[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|sk-(proj-)?[A-Za-z0-9_-]{20,}|sk_live_[A-Za-z0-9]{16,}|rk_live_[A-Za-z0-9]{16,}|gl(pat|ptt|dt|rt)-[A-Za-z0-9_-]{20,}|npm_[A-Za-z0-9]{36}|pypi-[A-Za-z0-9_-]{30,}|AIza[0-9A-Za-z_-]{35}|ya29\.[0-9A-Za-z_-]{20,}|dckr_pat_[A-Za-z0-9_-]{20,}|SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}|shpat_[0-9a-fA-F]{32}|sq0atp-[0-9A-Za-z_-]{22}|sq0csp-[0-9A-Za-z_-]{22}|shpss_[0-9a-fA-F]{32}|whsec_[A-Za-z0-9]{20,}|GOCSPX-[A-Za-z0-9_-]{20,}|-----BEGIN [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'
+prefix_hits=$(grep -nE -- "$token_re" "$file" || true)
+prefix_fails=""
+if [[ -n $prefix_hits ]]; then
+  prefix_fails=$prefix_hits$'\n'
+  fail "credential-shaped value; keep secrets out of AGENTS.md"
+  printf '%s' "$prefix_fails"
+fi
+
+key_re='(^|[^A-Za-z0-9])([A-Za-z0-9_-]*(password|passwd|token|secret|api[_-]?key|private[_-]?key|access[_-]?key|client[_-]?secret)([_-][A-Za-z0-9]+)*)'"[\"']"'?[[:space:]]*[:=][[:space:]]*(.*)$'
+secret_fails=""
+secret_warns=""
+secret_empty=""
+while IFS= read -r raw; do
+  [[ -z $raw ]] && continue
+  case $prefix_fails in
+    *"$raw"$'\n'*) continue ;;
+  esac
+  body=${raw#*:}
+  body_low=$(printf '%s' "$body" | tr '[:upper:]' '[:lower:]')
+  if [[ $body_low =~ $key_re ]]; then
+    key=${BASH_REMATCH[2]}
+    value=${BASH_REMATCH[5]}
+  else
+    continue
+  fi
+  key=$(printf '%s' "$key" | tr '[:upper:]' '[:lower:]')
+  value=${value#"${value%%[![:space:]]*}"}
+  case $value in
+    [\"\'\`]*)
+      quote=${value:0:1}
+      value=${value:1}
+      value=${value%%"$quote"*}
+      ;;
+    *) value=${value%%[[:space:]]*} ;;
+  esac
+  value=${value%,}
+  value=${value%;}
+  if [[ -z $value ]]; then
+    secret_empty+="$raw"$'\n'
+    continue
+  fi
+  vlow=$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')
+  case $vlow in
+    ""|*getenv*|*os.environ*|*process.env*) continue ;;
+    your_token_here|your-token-here|changeme|change_me|replace_me|placeholder|example|dummy|redacted|required|optional) continue ;;
+    xxxx|xxxxxxxx|none|true|false|null|yes|no|unset|empty) continue ;;
+  esac
+  case $value in
+    '$'*|'<'*|*'>'*) continue ;;
+    /*|./*|../*|~*) continue ;;
+    *'://'*) continue ;;
+  esac
+  case $key in
+    *_path|*_file|*_dir|*_folder|*_name|*_url|*_uri|*_endpoint|*_host|*_param) continue ;;
+    *_type|*_mode|*_enabled|*_disabled|*_ttl|*_limit|*_count|*_policy|*_field|*_label) continue ;;
+    *_prefix|*_format|*_length|*_expiry|*_expires|*_timeout|*_algorithm|*_location) continue ;;
+    *_store|*_backend|*_provider|*_issuer|*_audience|*_scope|*_flow) continue ;;
+  esac
+  vlen=${#value}
+  has_digit=0
+  [[ $value == *[0-9]* ]] && has_digit=1
+  if (( vlen >= 10 && has_digit )) || (( vlen >= 24 )); then
+    secret_fails+="$raw"$'\n'
+  else
+    secret_warns+="$raw"$'\n'
+  fi
+done < <(grep -nEi '(password|passwd|token|secret|api[_-]?key|private[_-]?key|access[_-]?key|client[_-]?secret)' "$file" || true)
+
+if [[ -n $secret_fails ]]; then
+  fail "credential-shaped value; keep secrets out of AGENTS.md"
+  printf '%s' "$secret_fails"
+fi
+if [[ -n $secret_warns ]]; then
+  soft "credential keyword with a non-secret value; confirm it names a variable" "$secret_warns"
+fi
+if [[ -n $secret_empty ]]; then
+  soft "credential keyword with an empty value; confirm the value is not on the next line" "$secret_empty"
+fi
+
+check() {
+  local label=$1 pattern=$2 hits
+  hits=$(grep -nEi -- "$pattern" "$file" || true)
+  [[ -n $hits ]] && soft "$label" "$hits"
+}
+
+check "vague advice (replace with a concrete rule)" '(^|[^[:alnum:]_])(best practices?|clean code|high quality|be careful|as needed|various)([^[:alnum:]_]|$)|etc\.'
+check "possible lint leakage (keep only if the rule is non-standard)" '(^|[^[:alnum:]_])(indentation|line length|max(imum)? line|import order|naming conventions?|single quotes|double quotes|semicolons|tabs? versus spaces|format(ting)? (the |your )?code)([^[:alnum:]_]|$)'
+check "destructive git (only under a Never boundary)" '(git push[^#]*--force|--no-verify|git reset --hard)'
+check "unfinished placeholder" '(^|[^[:alnum:]_])(TODO|TBD|FIXME)([^[:alnum:]_]|$)'
+check "possible bug documented as a caveat (surface it; use the temporary TODO_BEFORE_SHIPPING.md)" '(^|[^[:alnum:]_])(known bug|known issue|pre-existing (bug|issue))([^[:alnum:]_]|$)'
+
+full_suite=$(grep -nEi 'always run (the )?(full|entire|whole) (test )?suite' "$file" | grep -vi 'before handoff' || true)
+[[ -n $full_suite ]] && soft "full-suite default (prefer a scoped command)" "$full_suite"
+
+placeholders=$(grep -nE '<(cmd|path|file|pattern|format|prefix|short-desc|mode|package|Project|inputs|client|service|[^<>]* [^<>]*)>' "$file" \
+  | grep -v '<!--' \
+  | grep -vE '<[A-Z][A-Za-z0-9]*:' \
+  | grep -vE '<[A-Za-z][A-Za-z0-9]*[[:space:]]+[A-Za-z-]+=' || true)
+[[ -n $placeholders ]] && soft "template placeholder (fill it in or confirm it is intentional)" "$placeholders"
+
+if (( style )); then
+  contrast=$(grep -nE ', not( |$)' "$file" || true)
+  [[ -n $contrast ]] && soft "style: contrast negation (state the positive rule)" "$contrast"
+  nonprint=$(LC_ALL=C grep -n '[^[:print:][:space:]]' "$file" || true)
+  [[ -n $nonprint ]] && soft "style: non-ASCII or control character (prefer ASCII when the repo writes English)" "$nonprint"
+  dashes=$(LC_ALL=C grep -nE $'\xe2\x80\x93|\xe2\x80\x94' "$file" || true)
+  [[ -n $dashes ]] && soft "style: em or en dash (prefer a hyphen or a full stop)" "$dashes"
+fi
+
+ref_tokens() {
+  grep -oE "$tick|\]\([^)]+\)" "$file" \
+    | sed -e 's/^`//' -e 's/`$//' -e 's/^](//' -e 's/)$//' \
+    | tr ' ' '\n'
+}
+
+while IFS= read -r ref; do
+  [[ -z $ref ]] && continue
+  case $ref in
+    *'://'*|*'<'*|*'>'*|*'*'*|*'...'*|*'$'*|*'{'*|*'}'*|*'('*|*')'*|*'|'*|*'='*|*','*|*'@'*|*'%'*) continue ;;
+    /*|-*) continue ;;
+  esac
+  ref=${ref%%#*}
+  ref=${ref%%:*}
+  [[ $ref == */* ]] || continue
+  [[ -e $here/$ref || -e $root_refs/$ref ]] && continue
+  first=${ref%%/*}
+  case $first in
+    origin|upstream|HEAD|feature|feat|fix|hotfix|bugfix|release|chore|refactor) continue ;;
+  esac
+  warn "missing relative path: $ref"
+done < <(ref_tokens | sort -u)
+
+if (( ! is_root )); then
+  while IFS= read -r readme; do
+    [[ -z $readme ]] && continue
+    [[ -e $here/$readme || -e $root_refs/$readme ]] && continue
+    warn "nested file points at a missing README: $readme"
+  done < <(ref_tokens | grep 'README\.md$' | sort -u)
+fi
+
+dups=$(grep -E '^#{1,6} ' "$file" | sort | uniq -d || true)
+[[ -n $dups ]] && soft "duplicate headings" "$dups"
+
+if ! grep -qiE '^#+ .*(command|build|test|verif|usage|setup)' "$file"; then
+  warn "no commands section; add one when the repo has non-default commands"
+fi
+if ! grep -qE "$tick" "$file"; then
+  warn "no inline code; commands and paths should be literal"
+fi
+
+if [[ -n $repo && $(git -C "$repo" rev-parse --is-shallow-repository 2>/dev/null) != true ]]; then
+  rel=${here#"$repo"}
+  rel=${rel#/}
+  pathspec=$base
+  [[ -n $rel ]] && pathspec=$rel/$base
+  commits=$(git -C "$repo" log --oneline -- "$pathspec" 2>/dev/null | wc -l)
+  if (( commits == 1 )); then
+    warn "only one commit touches $pathspec; init fossilization risk"
+  fi
+fi
+
+if (( strict && warnings > 0 )); then
+  printf '\nstrict: %s warning(s) treated as failures\n' "$warnings"
+  status=1
+fi
+
+printf '\nmanual checks: run the commands; confirm every path; no contradictions; no stale references; no unconfirmed bug documented as a caveat.\n'
+exit "$status"
