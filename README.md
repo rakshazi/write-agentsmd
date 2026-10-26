@@ -1,7 +1,7 @@
 # write-AGENTSmd skill
 
-> a story will be published to [rakshazi.me/blog/](https://rakshazi.me/blog/) later,
-> because at the moment this file is created, I still extensively work on the skill based on my projects.
+> Here is a story about the skill, AGENTS.md as concept, and why it can't replace you:
+> [rakshazi.me/blog/write-agentsmd-skill/](https://rakshazi.me/blog/write-agentsmd-skill/)
 
 "AGENTS.md is essential for coding agents to comprehensively understand the codebase of your specific project..."
 yada-yada.
@@ -37,6 +37,8 @@ omp:
 ```bash
 git clone https://github.com/rakshazi/write-agentsmd.git ~/.omp/agent/skills/write-agentsmd
 ```
+
+or just ask your agent to install it for you.
 
 ## Use
 
