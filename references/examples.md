@@ -1,12 +1,12 @@
 # What real repositories do
 
-Sizes measured 2026-10-24 from the default branch. Read these for judgment. Do not copy them as templates.
+Sizes measured 2026-10-24 from the default branch. Read these for judgment; the templates live in `assets/`.
 
 ## Root files
 
 | Repository | Lines | Bytes | What it does well | What to steal |
 |---|---:|---:|---|---|
-| mark3labs/mcp-go | 21 | 1,739 | Commands, git policy, code style. Complete for a small Go library. | A short file is a finished file. Do not pad it. |
+| mark3labs/mcp-go | 21 | 1,739 | Commands, git policy, code style. Complete for a small Go library. | A short file is a finished file. |
 | temporalio/sdk-java | 59 | 2,391 | Layout, Java 8 constraint, build and test commands, PR questions, review checklist. | Version constraints and the one command that saves a slow build. |
 | grafana/alloy | 188 | 8,995 | Essential references with a purpose, MUST/MUST NOT/MAY process rules, docs playbooks, environment gotchas. | Process rules that are explicit about required, forbidden, and optional work. |
 | kubernetes-sigs/agent-sandbox | 188 | 23,424 | Layout table, build/test matrix, generated code and regeneration, docs mounts, coding conventions, writing rules, PR/CI rules, things to avoid, pointers. | The "things to avoid" section and the generated-code regeneration flow. |
@@ -17,9 +17,7 @@ Sizes measured 2026-10-24 from the default branch. Read these for judgment. Do n
 
 ### What the sizes mean
 
-- 21-60 lines fits a library with simple commands and few invariants.
-- 150-260 lines fits a multi-language monorepo with generated code, several build systems, or a real policy.
-- Past 260 at the root is a signal to split. The content can be good and still cost too much on every task.
+- A 21-line library file is complete. The limits are in `SKILL.md`: root up to 150, split at 200. The content past that can be good and still cost too much on every task.
 
 ## Nested files
 
@@ -44,16 +42,6 @@ The pattern: the root file covers repo-wide commands and boundaries; the nested 
 8. **Pointers with purpose.** Every link says what it contains and when to read it.
 9. **Things to avoid.** The specific traps this repository has already hit.
 10. **Review checklist.** What a PR reviewer must verify, written for the agent doing reviews.
-
-## Recurring failure modes
-
-- A root file that repeats the README, the linter config, and the directory tree.
-- A `MUST` list with no stop condition, so the agent follows it into unrelated work.
-- A generated file with no regeneration command, so the agent edits it by hand.
-- A path or command that no longer exists.
-- A nested file that repeats the root file instead of adding subtree rules.
-- A policy section with no link to the human-owned source of truth.
-- A 400-line root file with excellent content and no splitting.
 
 ## Links
 

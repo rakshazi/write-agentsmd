@@ -173,6 +173,44 @@ out=$(cd "$d/repo" && bash "$audit" packages/api/AGENTS.md 2>&1); rc=$?
 check_rc 2 "$rc" "symlink parent: exits 2"
 check_contains "outside the repository" "$out" "symlink parent: reported"
 
+# A token prefix inside an ordinary word is prose, and a secret still fails past the size cap.
+d=$tmp/prefix-boundary
+write_agents "$d" '# Demo
+
+## Commands
+
+- Test: `true`
+
+See docs/task-runner-configuration-guide and the disk-usage-monitoring-report.'
+out=$(run "$d" AGENTS.md); rc=$?
+check_rc 0 "$rc" "prefix boundary: exits 0"
+check_absent "credential-shaped value" "$out" "prefix boundary: sk- inside a word ignored"
+
+d=$tmp/size-and-secret
+mkdir -p "$d"
+{ printf '# Demo\n\n## Commands\n\n- Test: `true`\n- Token: `ghp_ABCDEFGHIJKLMNOPQRSTUVWX`\n\n'; yes 'filler line for the size cap' | head -n 1500; } > "$d/AGENTS.md"
+out=$(run "$d" AGENTS.md); rc=$?
+check_rc 1 "$rc" "size and secret: exits 1"
+check_contains "over 32 KiB" "$out" "size and secret: size reported"
+check_contains "credential-shaped value" "$out" "size and secret: secret still reported"
+
+# Bearer values and test-mode keys fail; a long lowercase identifier only warns.
+d=$tmp/bearer-and-identifier
+write_agents "$d" '# Demo
+
+## Commands
+
+- Test: `true`
+
+- Authorization: Bearer abcdef1234567890abcdef1234567890
+- Stripe: `sk_test_ABCDEFGHIJKLMNOP1234`
+- API_KEY=my_env_variable_name_here_ok'
+out=$(run "$d" AGENTS.md); rc=$?
+check_rc 1 "$rc" "bearer: exits 1"
+check_contains "Authorization: Bearer" "$out" "bearer: header reported"
+check_contains "sk_test_ABCDEFGHIJKLMNOP1234" "$out" "bearer: sk_test key reported"
+check_contains "confirm it names a variable" "$out" "identifier: long lowercase value only warns"
+
 # A credential key with an empty value fails strict until reviewed.
 d=$tmp/empty-value
 write_agents "$d" '# Demo

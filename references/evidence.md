@@ -17,7 +17,7 @@ https://arxiv.org/abs/2602.11988
 - Repository overviews did not help. 8 of 12 developer files had one; 4 enumerated directories. Context files did not reduce the steps needed to reach the files changed by the real PR.
 - Authors' recommendation: omit LLM-generated context files. Human files should carry only instructions the agent cannot infer, such as non-standard conventions or non-functional requirements.
 
-Caveat: Python repositories, single-task benchmark, well-documented open source. The result does not prove that a curated file cannot help a proprietary monorepo. It does show that plausible repository description is a cost with no measured success gain.
+Caveat: Python repositories, single-task benchmark, well-documented open source. A curated file in a proprietary monorepo is outside the data. Inside it: plausible repository description costs more and gains no measured success.
 
 ### Lulla et al. 2026
 
@@ -59,7 +59,7 @@ https://aaif.io/blog/measuring-agents-md-what-five-runs-show-that-one-doesn-t
 - The first single-run comparison showed the file 44% slower and 41% more expensive. Five-run medians reversed the sign.
 - Concrete instructions beat aspirational ones. The winning file had a package manager, key commands, one generated-file boundary, and one line about staying scoped.
 
-Caveat: one repository, one agent, two tasks. Use it to understand measurement noise and where the wins come from. Do not treat it as a universal effect size.
+Caveat: one repository, one agent, two tasks. It shows measurement noise and where the wins come from; the effect size is local to that repo.
 
 ## Primary guidance
 
@@ -106,7 +106,7 @@ https://github.blog/ai-and-ml/github-copilot/how-to-write-a-great-agents-md-less
 - Six areas: commands, testing, project structure, code style, git workflow, boundaries.
 - "Never commit secrets" was the most common useful constraint.
 
-Caveat: the worked example is a custom agent persona file under `.github/agents/`, so the post mixes repo-level instructions with agent definitions. Treat the six areas as a content checklist. The post is not a controlled study of AGENTS.md alone.
+Caveat: the worked example is a custom agent persona file under `.github/agents/`, so the post mixes repo-level instructions with agent definitions. Treat the six areas as a content checklist; the post is practitioner guidance and measures nothing.
 
 ## Real repository sizes
 

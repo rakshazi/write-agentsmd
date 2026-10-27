@@ -154,6 +154,72 @@ check_rc 2 "$rc" "missing file: exits 2"
 out=$(run "$d" --strict --extract-commands AGENTS.md); rc=$?
 check_rc 2 "$rc" "conflicting flags: exits 2"
 
+# Words inside a command, ~/ paths, .git paths, and ../ paths outside the repo are not stale paths.
+d=$tmp/path-shapes
+write_agents "$d" '# Demo
+
+## Commands
+
+- Build: `go build -o build/app ./cmd/app`
+- Reset: `kubectl delete pvc/data-pg-0`
+- Config: `~/.config/tool/config.toml`
+
+## Landmines
+
+- Builds ignore `.git/index.lock`.
+- Sibling checkout: `../sibling-repo`.
+- Gone: `src/nothere.go`.'
+gitinit "$d"
+out=$(run "$d" AGENTS.md); rc=$?
+check_rc 0 "$rc" "path shapes: exits 0"
+check_absent "missing relative path: build/app" "$out" "path shapes: command word skipped"
+check_absent "missing relative path: pvc/data-pg-0" "$out" "path shapes: kubectl resource skipped"
+check_absent "missing relative path: ~/.config" "$out" "path shapes: home path skipped"
+check_absent "missing relative path: .git/index.lock" "$out" "path shapes: .git path skipped"
+check_absent "missing relative path: ../sibling-repo" "$out" "path shapes: sibling checkout skipped"
+check_contains "missing relative path: src/nothere.go" "$out" "path shapes: stale path still reported"
+
+# A ../ path that stays inside the repo is still checked from a nested file.
+d=$tmp/nested-dotdot
+write_agents "$d/pkg" '# pkg
+
+## Verify
+
+`true`
+
+See `../docs/nothere.md`.'
+gitinit "$d"
+out=$(run "$d/pkg" AGENTS.md); rc=$?
+check_contains "missing relative path: ../docs/nothere.md" "$out" "nested dotdot: in-repo ../ path reported"
+
+# Every contrast-negation shape fires under --style; an em dash counts once.
+# The fixture spells the keyword through a variable so the suite itself passes a prose scan.
+d=$tmp/style-shapes
+nw=not
+emdash=$(printf '\xe2\x80\x94')
+write_agents "$d" "# Demo
+
+## Commands
+
+- Test: \`true\`
+
+## Notes
+
+- Use pnpm, $nw npm.
+- This is $nw just a cache but a database.
+- This isn't a bug. It's a feature.
+- It's $nw the cache, it's the DB.
+- Do $nw use npm; use pnpm.
+- Plain line with a dash $emdash here."
+out=$(run "$d" --style AGENTS.md); rc=$?
+check_contains "- Use pnpm," "$out" "style shapes: comma-$nw reported"
+check_contains "just a cache but" "$out" "style shapes: $nw-just-but reported"
+check_contains "a bug. It's" "$out" "style shapes: period split reported"
+check_contains "the cache, it's" "$out" "style shapes: $nw-A-its-B reported"
+check_contains "use npm; use pnpm" "$out" "style shapes: do-$nw-use reported"
+count=$(printf '%s\n' "$out" | grep -c 'with a dash')
+check_rc 1 "$count" "style shapes: em dash reported once"
+
 # Static guard against bash 4-only idioms.
 if grep -qE 'declare -A|declare -n|mapfile|readarray|local -n|&>>|coproc|wait -n|\$\{[A-Za-z_][A-Za-z0-9_]*(\^\^?|,,?|@[QEPAa])' "$audit"; then
   nope "bash 3.2 compatibility: bash 4-only idiom found"

@@ -20,8 +20,14 @@ caveats.
   --extract-commands  print candidate commands and exit; inspect each before running
   --                  end of options
 
-Backticked paths are checked unless they look like a URL, glob, command, branch
-name, or package scope. A missing path warns; a trailing slash marks a directory.
+Backticked paths are checked unless they contain whitespace (a command or a
+sentence) or look like a URL, glob, branch name, package scope, ~/ path, .git
+path, or ../ path outside the repository. A missing path warns; a trailing
+slash marks a directory.
+
+The chain is the Codex AGENTS.md ancestry plus $CODEX_HOME. CLAUDE.md and its
+@imports are outside it. FILE must sit under the working directory or its git
+repository; a path elsewhere exits 2.
 
 Exit codes:
   0  no hard failures, and no warnings under --strict
@@ -257,11 +263,9 @@ if (( lines >= 200 )); then
 fi
 if (( bytes > 32768 )); then
   fail "over 32 KiB: Codex skips files past the combined chain cap"
-  exit 1
 fi
 if (( chain > 32768 )); then
   fail "combined chain is $chain bytes: Codex skips files past 32 KiB"
-  exit 1
 fi
 
 url_creds=$(grep -nE '://[^/[:space:]]+:[^/[:space:]]+@' "$file" || true)
@@ -270,7 +274,7 @@ if [[ -n $url_creds ]]; then
   printf '%s\n' "$url_creds"
 fi
 
-token_re='gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|(AKIA|ASIA)[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|sk-(proj-)?[A-Za-z0-9_-]{20,}|sk_live_[A-Za-z0-9]{16,}|rk_live_[A-Za-z0-9]{16,}|gl(pat|ptt|dt|rt)-[A-Za-z0-9_-]{20,}|npm_[A-Za-z0-9]{36}|pypi-[A-Za-z0-9_-]{30,}|AIza[0-9A-Za-z_-]{35}|ya29\.[0-9A-Za-z_-]{20,}|dckr_pat_[A-Za-z0-9_-]{20,}|SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}|shpat_[0-9a-fA-F]{32}|sq0atp-[0-9A-Za-z_-]{22}|sq0csp-[0-9A-Za-z_-]{22}|shpss_[0-9a-fA-F]{32}|whsec_[A-Za-z0-9]{20,}|GOCSPX-[A-Za-z0-9_-]{20,}|-----BEGIN [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'
+token_re='(^|[^A-Za-z0-9_])(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|(AKIA|ASIA)[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|sk-(proj-)?[A-Za-z0-9_-]{20,}|sk_(live|test)_[A-Za-z0-9]{16,}|rk_live_[A-Za-z0-9]{16,}|gl(pat|ptt|dt|rt)-[A-Za-z0-9_-]{20,}|npm_[A-Za-z0-9]{36}|pypi-[A-Za-z0-9_-]{30,}|AIza[0-9A-Za-z_-]{35}|ya29\.[0-9A-Za-z_-]{20,}|dckr_pat_[A-Za-z0-9_-]{20,}|SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}|shpat_[0-9a-fA-F]{32}|sq0atp-[0-9A-Za-z_-]{22}|sq0csp-[0-9A-Za-z_-]{22}|shpss_[0-9a-fA-F]{32}|whsec_[A-Za-z0-9]{20,}|GOCSPX-[A-Za-z0-9_-]{20,}|-----BEGIN [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|hooks\.slack\.com/services/[A-Za-z0-9]+/[A-Za-z0-9]+/[A-Za-z0-9]+)'
 prefix_hits=$(grep -nE -- "$token_re" "$file" || true)
 prefix_fails=""
 if [[ -n $prefix_hits ]]; then
@@ -279,7 +283,7 @@ if [[ -n $prefix_hits ]]; then
   printf '%s' "$prefix_fails"
 fi
 
-key_re='(^|[^A-Za-z0-9])([A-Za-z0-9_-]*(password|passwd|token|secret|api[_-]?key|private[_-]?key|access[_-]?key|client[_-]?secret)([_-][A-Za-z0-9]+)*)'"[\"']"'?[[:space:]]*[:=][[:space:]]*(.*)$'
+key_re='(^|[^A-Za-z0-9])([A-Za-z0-9_-]*(password|passwd|token|secret|api[_-]?key|private[_-]?key|access[_-]?key|client[_-]?secret|bearer|authorization)([_-][A-Za-z0-9]+)*)'"[\"']"'?[[:space:]]*[:=][[:space:]]*(.*)$'
 secret_fails=""
 secret_warns=""
 secret_empty=""
@@ -298,6 +302,9 @@ while IFS= read -r raw; do
   fi
   key=$(printf '%s' "$key" | tr '[:upper:]' '[:lower:]')
   value=${value#"${value%%[![:space:]]*}"}
+  case $value in
+    [Bb]earer\ *) value=${value#* } ;;
+  esac
   case $value in
     [\"\'\`]*)
       quote=${value:0:1}
@@ -332,12 +339,14 @@ while IFS= read -r raw; do
   vlen=${#value}
   has_digit=0
   [[ $value == *[0-9]* ]] && has_digit=1
-  if (( vlen >= 10 && has_digit )) || (( vlen >= 24 )); then
+  identifier=0
+  [[ $value =~ ^[a-z][a-z_]*$ ]] && identifier=1
+  if (( vlen >= 10 && has_digit )) || (( vlen >= 24 && ! identifier )); then
     secret_fails+="$raw"$'\n'
   else
     secret_warns+="$raw"$'\n'
   fi
-done < <(grep -nEi '(password|passwd|token|secret|api[_-]?key|private[_-]?key|access[_-]?key|client[_-]?secret)' "$file" || true)
+done < <(grep -nEi '(password|passwd|token|secret|api[_-]?key|private[_-]?key|access[_-]?key|client[_-]?secret|bearer|authorization)' "$file" || true)
 
 if [[ -n $secret_fails ]]; then
   fail "credential-shaped value; keep secrets out of AGENTS.md"
@@ -372,9 +381,9 @@ placeholders=$(grep -nE '<(cmd|path|file|pattern|format|prefix|short-desc|mode|p
 [[ -n $placeholders ]] && soft "template placeholder (fill it in or confirm it is intentional)" "$placeholders"
 
 if (( style )); then
-  contrast=$(grep -nE ', not( |$)' "$file" || true)
+  contrast=$(grep -nE ', not( |$)|(^|[^A-Za-z])not (just|only) [^.]*[^A-Za-z]but[^A-Za-z]|n'\''t [^.]*\. (It|That|This)'\''s |(^|[^A-Za-z])not [^,.]*, (it|that|this)'\''s |^[-* ]*Do not [^.;]*[.;] [Uu]se ' "$file" || true)
   [[ -n $contrast ]] && soft "style: contrast negation (state the positive rule)" "$contrast"
-  nonprint=$(LC_ALL=C grep -n '[^[:print:][:space:]]' "$file" || true)
+  nonprint=$(LC_ALL=C sed $'s/\xe2\x80[\x93\x94]//g' "$file" | LC_ALL=C grep -n '[^[:print:][:space:]]' || true)
   [[ -n $nonprint ]] && soft "style: non-ASCII or control character (prefer ASCII when the repo writes English)" "$nonprint"
   dashes=$(LC_ALL=C grep -nE $'\xe2\x80\x93|\xe2\x80\x94' "$file" || true)
   [[ -n $dashes ]] && soft "style: em or en dash (prefer a hyphen or a full stop)" "$dashes"
@@ -383,22 +392,25 @@ fi
 ref_tokens() {
   grep -oE "$tick|\]\([^)]+\)" "$file" \
     | sed -e 's/^`//' -e 's/`$//' -e 's/^](//' -e 's/)$//' \
-    | tr ' ' '\n'
+    | grep -v '[[:space:]]'
 }
 
 while IFS= read -r ref; do
   [[ -z $ref ]] && continue
   case $ref in
     *'://'*|*'<'*|*'>'*|*'*'*|*'...'*|*'$'*|*'{'*|*'}'*|*'('*|*')'*|*'|'*|*'='*|*','*|*'@'*|*'%'*) continue ;;
-    /*|-*) continue ;;
+    /*|-*|'~'*) continue ;;
   esac
   ref=${ref%%#*}
   ref=${ref%%:*}
   [[ $ref == */* ]] || continue
   [[ -e $here/$ref || -e $root_refs/$ref ]] && continue
+  if [[ $ref == ../* ]] && abs=$(cd "$here/$(dirname "$ref")" 2>/dev/null && pwd -P); then
+    case $abs in "$root_refs"|"$root_refs"/*) : ;; *) continue ;; esac
+  fi
   first=${ref%%/*}
   case $first in
-    origin|upstream|HEAD|feature|feat|fix|hotfix|bugfix|release|chore|refactor) continue ;;
+    .git|origin|upstream|HEAD|feature|feat|fix|hotfix|bugfix|release|chore|refactor) continue ;;
   esac
   warn "missing relative path: $ref"
 done < <(ref_tokens | sort -u)

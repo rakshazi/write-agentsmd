@@ -1,6 +1,6 @@
 # <package>
 
-<One or two sentences: what it owns, who calls it, and the boundary it must not cross.>
+<What it owns, who calls it, the boundary it must not cross. Example: owns the price cache; called by checkout; never reads the orders table.>
 
 ## Contract
 
@@ -13,7 +13,7 @@
 
 ## Verify
 
-`<scoped test command>`
+`<one scoped test command>`
 
 ## Pointers
 

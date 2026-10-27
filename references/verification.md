@@ -10,11 +10,4 @@ The cheap default check is in `SKILL.md`. Load this when the user asks for evide
 4. Run each condition at least five times and compare medians. One run is noise; a single-run result has flipped sign in practice.
 5. Two conditions, two tasks, and five runs is 20 agent runs. Budget for that before starting.
 6. A throwaway repo with no backlog and no git baseline cannot support this comparison. Say the file is unverified and hand it off.
-
-## Reading a failed run
-
-- Missed command: the line was unclear, or the command sits in prose. Make it literal and scoped.
-- Invented command: the file gave a pattern without an example. Add the real command.
-- Wrong directory: state "from the repo root" or the exact path.
-- Unnecessary exploration: the file lacks a layout pointer the task needed, or the task was out of scope.
-- Repeated mistake: add one line only after the same mistake appears twice.
+7. Reading a failed run: `SKILL.md`, Verify step 4.
