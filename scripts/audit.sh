@@ -9,8 +9,8 @@ usage() {
 Usage: scripts/audit.sh [--root|--nested] [--strict] [--style] [--extract-commands] [--] [FILE]
 
 Check an agent context file for size limits, credential-shaped values, lint
-leakage, stale relative paths, template placeholders, and bugs described as
-caveats.
+leakage, stale relative paths, template placeholders, copied template examples,
+task-runner targets that do not exist, and bugs described as caveats.
 
   FILE                target file, default AGENTS.md
   --root              treat FILE as a repo-root file
@@ -379,6 +379,79 @@ placeholders=$(grep -nE '<(cmd|path|file|pattern|format|prefix|short-desc|mode|p
   | grep -vE '<[A-Z][A-Za-z0-9]*:' \
   | grep -vE '<[A-Za-z][A-Za-z0-9]*[[:space:]]+[A-Za-z-]+=' || true)
 [[ -n $placeholders ]] && soft "template placeholder (fill it in or confirm it is intentional)" "$placeholders"
+
+check "template example copied (replace it with this repository's fact)" 'mainframe emulator|tide heights|tide-table cache|harbour scheduler|moon-phase table'
+
+# Task-runner targets: a name that fits the pattern and does not exist is the cheapest fabrication to catch.
+runner_file() {
+  local d name
+  for d in "$here" "$root_refs"; do
+    for name in "$@"; do
+      [[ -f $d/$name ]] && { printf '%s\n' "$d/$name"; return 0; }
+    done
+  done
+  return 1
+}
+
+rule_names() {
+  awk -F':' '/^[A-Za-z0-9_.\/!%@-][^:=#]*:([^=]|$)/ { n = split($1, a, /[ \t]+/); for (i = 1; i <= n; i++) if (a[i] != "") print a[i] }' "$1" | sed 's/^@//'
+}
+
+make_targets() {
+  local mk=$1 dir inc f
+  dir=${mk%/*}
+  rule_names "$mk"
+  grep -hE '^-?include[[:space:]]' "$mk" | sed 's/^-\{0,1\}include[[:space:]]*//' | while IFS= read -r inc; do
+    for f in $inc; do
+      [[ -f $dir/$f ]] && rule_names "$dir/$f"
+    done
+  done
+}
+
+runner_refs() {
+  {
+    awk '/^[[:space:]]*```/ { fence = !fence; next } fence { print }' "$file"
+    grep -oE "$tick" "$file"
+  } | grep -oE "(^|[^A-Za-z0-9_./-])$1[[:space:]]+[A-Za-z0-9_./!][A-Za-z0-9_./!:-]*" \
+    | sed -E "s/^.*$1[[:space:]]+//" | sort -u
+}
+
+for runner in make just; do
+  refs=$(runner_refs "$runner")
+  [[ -z $refs ]] && continue
+  case $runner in
+    make) rf=$(runner_file Makefile makefile GNUmakefile) || { warn "$runner referenced and no Makefile found"; continue; } ;;
+    just) rf=$(runner_file justfile Justfile .justfile) || { warn "$runner referenced and no justfile found"; continue; } ;;
+  esac
+  targets=$(if [[ $runner == make ]]; then make_targets "$rf"; else rule_names "$rf"; fi)
+  catchall=0
+  [[ $runner == make ]] && grep -qE '^%[[:space:]]*:' "$rf" && catchall=1
+  while IFS= read -r t; do
+    [[ -z $t ]] && continue
+    case $t in *=*|*'$'*) continue ;; esac
+    if printf '%s\n' "$targets" | grep -qxF -- "$t"; then continue; fi
+    if (( catchall )); then
+      warn "$runner target $t has no rule; the %: catch-all takes it"
+    else
+      warn "unknown $runner target: $t"
+    fi
+  done <<< "$refs"
+done
+
+npm_refs=$({ awk '/^[[:space:]]*```/ { fence = !fence; next } fence { print }' "$file"; grep -oE "$tick" "$file"; } \
+  | grep -oE '(^|[^A-Za-z0-9_./-])(npm|pnpm|yarn|bun)[[:space:]]+run[[:space:]]+[A-Za-z0-9_.:-]+' \
+  | sed -E 's/^.*run[[:space:]]+//' | sort -u)
+if [[ -n $npm_refs ]]; then
+  if pj=$(runner_file package.json); then
+    scripts=$(awk '/"scripts"[[:space:]]*:/ { f = 1; next } f && /^[[:space:]]*}/ { f = 0 } f' "$pj" | grep -oE '^[[:space:]]*"[^"]+"' | tr -d ' \t"')
+    while IFS= read -r s; do
+      [[ -z $s ]] && continue
+      printf '%s\n' "$scripts" | grep -qxF -- "$s" || warn "unknown npm script: $s"
+    done <<< "$npm_refs"
+  else
+    warn "npm run referenced and no package.json found"
+  fi
+fi
 
 if (( style )); then
   contrast=$(grep -nE ', not( |$)|(^|[^A-Za-z])not (just|only) [^.]*[^A-Za-z]but[^A-Za-z]|n'\''t [^.]*\. (It|That|This)'\''s |(^|[^A-Za-z])not [^,.]*, (it|that|this)'\''s |^[-* ]*Do not [^.;]*[.;] [Uu]se ' "$file" || true)

@@ -220,6 +220,73 @@ check_contains "use npm; use pnpm" "$out" "style shapes: do-$nw-use reported"
 count=$(printf '%s\n' "$out" | grep -c 'with a dash')
 check_rc 1 "$count" "style shapes: em dash reported once"
 
+# Task-runner targets must exist in the runner's file; a fitting name that does not exist is a fabrication.
+d=$tmp/runner-targets
+mkdir -p "$d"
+printf 'build:\n\t@true\n\ntest lint: build\n\t@true\n\nFOO := bar\n' > "$d/Makefile"
+printf '{\n  "name": "x",\n  "scripts": {\n    "check": "true"\n  },\n  "dependencies": {\n    "deploy": "1.0.0"\n  }\n}\n' > "$d/package.json"
+write_agents "$d" '# Demo
+
+## Commands
+
+- Build: `make build`
+- Test: `make test && make lint`
+- Deploy: `make deploy`
+- Check: `npm run check`
+- Ship: `pnpm run deploy`
+
+```bash
+make -C sub build
+make release
+```'
+out=$(run "$d" AGENTS.md); rc=$?
+check_rc 0 "$rc" "runner targets: warning only"
+check_contains "unknown make target: deploy" "$out" "runner targets: missing make target reported"
+check_contains "unknown make target: release" "$out" "runner targets: fenced block scanned"
+check_absent "unknown make target: build" "$out" "runner targets: existing target passes"
+check_absent "unknown make target: lint" "$out" "runner targets: multi-target rule parsed"
+check_absent "unknown make target: sub" "$out" "runner targets: flag argument skipped"
+check_absent "unknown make target: FOO" "$out" "runner targets: variable assignment is no target"
+check_contains "unknown npm script: deploy" "$out" "runner targets: dependency name is no script"
+check_absent "unknown npm script: check" "$out" "runner targets: existing script passes"
+
+# A catch-all rule is named in the warning; an included makefile contributes targets.
+d=$tmp/runner-catchall
+mkdir -p "$d"
+printf 'include extra.mk\n\nhelp:\n\t@true\n\n%%:\n\t@:\n' > "$d/Makefile"
+printf 'extra:\n\t@true\n' > "$d/extra.mk"
+write_agents "$d" '# Demo
+
+## Commands
+
+- Help: `make help`, `make extra`, `make tset`'
+out=$(run "$d" AGENTS.md); rc=$?
+check_contains "make target tset has no rule; the %: catch-all takes it" "$out" "runner targets: catch-all named"
+check_absent "make target extra" "$out" "runner targets: included makefile parsed"
+check_absent "make target help" "$out" "runner targets: catch-all keeps real targets quiet"
+
+# A runner referenced with no runner file anywhere.
+d=$tmp/runner-none
+write_agents "$d" '# Demo
+
+## Commands
+
+- Build: `make build`'
+out=$(run "$d" AGENTS.md); rc=$?
+check_contains "make referenced and no Makefile found" "$out" "runner targets: missing Makefile reported"
+
+# A template example left in the file.
+d=$tmp/example-leak
+write_agents "$d" '# Demo
+
+Go service; tests need the mainframe emulator on :3270.
+
+## Commands
+
+- Test: `true`'
+out=$(run "$d" AGENTS.md); rc=$?
+check_contains "template example copied" "$out" "example leak: reported"
+
 # Static guard against bash 4-only idioms.
 if grep -qE 'declare -A|declare -n|mapfile|readarray|local -n|&>>|coproc|wait -n|\$\{[A-Za-z_][A-Za-z0-9_]*(\^\^?|,,?|@[QEPAa])' "$audit"; then
   nope "bash 3.2 compatibility: bash 4-only idiom found"

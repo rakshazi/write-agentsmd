@@ -1,8 +1,8 @@
 # <Project>
 
-<Most files keep four of these nine sections. Delete the rest.>
+<Most files keep four of these nine sections. Delete the rest. Every Example is fictional: replace it, never copy it.>
 
-<The stack and the one fact that changes how work is done. Example: Go 1.24 service; tests need Postgres on :5432.>
+<The stack and the one fact that changes how work is done. Example: Fortran 77 solver; tests need the mainframe emulator on :3270.>
 
 ## Commands
 
@@ -23,7 +23,7 @@
 
 ## Conventions
 
-- <Rule the compiler cannot check. Example: money is int64 cents; never float.>
+- <Rule the compiler cannot check. Example: tide heights are int32 millimetres; never float.>
 - <One real snippet when style cannot be inferred.>
 
 ## Testing
