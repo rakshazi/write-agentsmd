@@ -22,6 +22,8 @@ like secrets and whatnot, yay!
 
 Jokes aside: skill is useful to write a *draft* or *maintain* existing files, but relying on it alone is not the best idea.
 
+The skill was developed and calibrated to work somewhat good even on 4b models, so it is suitable for small local models, though the results are only 1/3 of a bigger (300b+) model.
+
 ## Install
 
 Clone it into your agent's skills directory.

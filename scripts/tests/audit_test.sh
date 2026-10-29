@@ -149,8 +149,10 @@ write_agents "$d" '# Demo
 - Test: `true`'
 out=$(run "$d" --nope AGENTS.md); rc=$?
 check_rc 2 "$rc" "bad flag: exits 2"
-out=$(run "$d" missing.md); rc=$?
+out=$(run "$d" missing.md 2>&1); rc=$?
 check_rc 2 "$rc" "missing file: exits 2"
+check_contains "write it first" "$out" "missing file: says what to do"
+check_absent "Exit codes:" "$out" "missing file: no usage dump"
 out=$(run "$d" --strict --extract-commands AGENTS.md); rc=$?
 check_rc 2 "$rc" "conflicting flags: exits 2"
 
@@ -191,6 +193,28 @@ See `../docs/nothere.md`.'
 gitinit "$d"
 out=$(run "$d/pkg" AGENTS.md); rc=$?
 check_contains "missing relative path: ../docs/nothere.md" "$out" "nested dotdot: in-repo ../ path reported"
+
+# A git-ignored path is build output or per-engineer config, absent from a clean checkout on purpose.
+d=$tmp/ignored-path
+write_agents "$d" '# app
+
+## Commands
+
+- Test: `go test ./...`
+
+## Layout
+
+| Path | What lives there |
+|---|---|
+| `build/ht` | compiled by `make ht build` |
+| `local/overrides.toml` | per-engineer config |
+| `src/nothere.go` | stale |'
+printf '/build/\nlocal/\n' > "$d/.gitignore"
+gitinit "$d"
+out=$(run "$d" AGENTS.md); rc=$?
+check_absent "missing relative path: build/ht" "$out" "gitignored: build output skipped"
+check_absent "missing relative path: local/overrides.toml" "$out" "gitignored: per-engineer config skipped"
+check_contains "missing relative path: src/nothere.go" "$out" "gitignored: tracked stale path still reported"
 
 # Every contrast-negation shape fires under --style; an em dash counts once.
 # The fixture spells the keyword through a variable so the suite itself passes a prose scan.
@@ -286,6 +310,137 @@ Go service; tests need the mainframe emulator on :3270.
 - Test: `true`'
 out=$(run "$d" AGENTS.md); rc=$?
 check_contains "template example copied" "$out" "example leak: reported"
+
+# The shipped example passes its own checker: every path and target it names exists in a fixture tree.
+d=$tmp/example-self
+mkdir -p "$d/src/tables" "$d/src/solve" "$d/harness/tests/soak" "$d/harness/tests/regress" "$d/harness/vendor/pyemu" "$d/harbour" "$d/docs" "$d/bin"
+touch "$d/harbour/index.txt" "$d/harbour/falmouth.dat" "$d/docs/solver.md" "$d/bin/solver"
+printf 'test:\nlint:\ntables-check:\nsolver:\ntables:\nemu:\npublish:\n' > "$d/Makefile"
+cp "$root/assets/example.md" "$d/AGENTS.md"
+out=$(run "$d" AGENTS.md); rc=$?
+check_rc 0 "$rc" "example self-check: default exits 0"
+check_absent "missing relative path" "$out" "example self-check: every path exists"
+check_absent "unknown make target" "$out" "example self-check: every make target exists"
+check_absent "template placeholder" "$out" "example self-check: no placeholder slot"
+check_absent "vague advice" "$out" "example self-check: no vague advice"
+check_contains "template example copied" "$out" "example self-check: the leak check knows the example"
+
+# The last line is the handoff contract.
+d=$tmp/lastline
+write_agents "$d" '# Demo
+
+## Commands
+
+- Test: `true`'
+out=$(run "$d" AGENTS.md); rc=$?
+last=$(printf '%s\n' "$out" | tail -n 1)
+check_contains "audit: exit 0 (0 warnings)" "$last" "last line: audit summary on a clean file"
+out=$(run "$d" --strict AGENTS.md)
+last=$(printf '%s\n' "$out" | tail -n 1)
+check_contains ", strict)" "$last" "last line: strict is named"
+
+# A body copied from another context file in the repository is a hard failure.
+d=$tmp/copied
+mkdir -p "$d/pkg"
+printf '# Canon for every service\n\n' > "$d/pkg/AGENTS.md"
+for i in 1 2 3 4 5 6 7 8; do printf -- '- Rule number %s: a long enough line to count as content, kept verbatim across files.\n' "$i" >> "$d/pkg/AGENTS.md"; done
+cp "$d/pkg/AGENTS.md" "$d/AGENTS.md"
+out=$(run "$d" AGENTS.md); rc=$?
+check_rc 1 "$rc" "copied body: exits 1"
+check_contains "copied from pkg/AGENTS.md" "$out" "copied body: source named"
+d=$tmp/not-copied
+mkdir -p "$d/pkg"
+cp "$tmp/copied/pkg/AGENTS.md" "$d/pkg/AGENTS.md"
+write_agents "$d" '# Demo
+
+## Commands
+
+- Test: `true`
+- Rule number 1: a long enough line to count as content, kept verbatim across files.
+- One of these lines is shared with the package file; the rest are this file alone, line a.
+- One of these lines is shared with the package file; the rest are this file alone, line b.
+- One of these lines is shared with the package file; the rest are this file alone, line c.
+- One of these lines is shared with the package file; the rest are this file alone, line d.'
+out=$(run "$d" AGENTS.md); rc=$?
+check_rc 0 "$rc" "one shared line: exits 0"
+check_absent "copied from" "$out" "one shared line: no copy report"
+
+# The ledger: missing, malformed, uncovered command, covered command.
+d=$tmp/ledger
+write_agents "$d" '# Demo
+
+## Commands
+
+- Test: `go test ./...`
+- Full check: `go vet ./... && go test ./...`
+- Deploy: `make deploy`'
+printf 'deploy:\n' > "$d/Makefile"
+out=$(run "$d" --ledger AGENTS.ledger.md AGENTS.md); rc=$?
+check_rc 1 "$rc" "ledger missing: exits 1"
+check_contains "ledger missing or empty" "$out" "ledger missing: reported"
+printf 'kind fact\n' > "$d/AGENTS.ledger.md"
+out=$(run "$d" --ledger AGENTS.ledger.md AGENTS.md); rc=$?
+check_contains "ledger has no | kind | fact | source | ran | header" "$out" "ledger malformed: reported"
+printf '| kind | fact | source | ran |\n|---|---|---|---|\n| command | `go test ./...` | Makefile:3 | 0 |\n| landmine | `make deploy` | README.md:9 | - |\n' > "$d/AGENTS.ledger.md"
+out=$(run "$d" --ledger AGENTS.ledger.md AGENTS.md); rc=$?
+check_rc 1 "$rc" "ledger uncovered: exits 1"
+check_contains "ledger row that ran or was deferred (ran = exit code or ask): go vet ./..." "$out" "ledger uncovered: chain segment named"
+check_contains "ran or was deferred (ran = exit code or ask): make deploy" "$out" "ledger uncovered: landmine row does not cover a command"
+printf '| kind | fact | source | ran |\n|---|---|---|---|\n| command | `timeout 120 go test ./...` | Makefile:3 | 0 |\n| command | `go vet ./...` | Makefile:4 | 0 |\n| boundary | `make deploy` | Makefile:9 | ask |\n' > "$d/AGENTS.ledger.md"
+out=$(run "$d" --ledger AGENTS.ledger.md AGENTS.md); rc=$?
+check_rc 0 "$rc" "ledger covered: exits 0"
+check_absent "ledger row" "$out" "ledger covered: nothing reported"
+check_contains "ledger: 3 rows, 2 commands ran, 0 failed, 1 deferred to the user; removed" "$out" "ledger clean: counts printed"
+[[ ! -e $d/AGENTS.ledger.md ]] && ok "ledger clean: ledger removed" || nope "ledger clean: ledger removed"
+case $(printf '%s\n' "$out" | tail -n 1) in "audit: exit 0"*) ok "ledger clean: audit line stays last" ;; *) nope "ledger clean: audit line stays last" "$out" ;; esac
+# A strict warning with no hard failure still removes the ledger.
+printf '| kind | fact | source | ran |\n|---|---|---|---|\n| command | `timeout 120 go test ./...` | Makefile:3 | 0 |\n| command | `go vet ./...` | Makefile:4 | 0 |\n| boundary | `make deploy` | Makefile:9 | ask |\n' > "$d/AGENTS.ledger.md"
+printf -- '- Config: `_env/dev.toml`\n' >> "$d/AGENTS.md"
+out=$(run "$d" --strict --ledger AGENTS.ledger.md AGENTS.md); rc=$?
+check_rc 1 "$rc" "ledger warn-only: strict still exits 1"
+[[ ! -e $d/AGENTS.ledger.md ]] && ok "ledger warn-only: ledger removed" || nope "ledger warn-only: ledger removed" "$out"
+check_contains "warnings left are notes for the user" "$out" "ledger warn-only: told to stop"
+# In a git repo a rerun after removal passes; a failing audit keeps the ledger.
+d=$tmp/ledger-done
+write_agents "$d" '# Demo
+
+## Commands
+
+- Test: `go test ./...`
+- Vet: `go vet ./...`'
+printf '| kind | fact | source | ran |\n|---|---|---|---|\n| command | `go test ./...` | Makefile:3 | 0 |\n' > "$d/AGENTS.ledger.md"
+gitinit "$d"
+out=$(run "$d" --ledger AGENTS.ledger.md AGENTS.md); rc=$?
+check_rc 1 "$rc" "ledger uncovered command: exits 1"
+[[ -e $d/AGENTS.ledger.md ]] && ok "ledger failing audit: ledger kept" || nope "ledger failing audit: ledger kept"
+printf '| command | `go vet ./...` | Makefile:4 | 0 |\n' >> "$d/AGENTS.ledger.md"
+run "$d" --ledger AGENTS.ledger.md AGENTS.md >/dev/null
+out=$(run "$d" --ledger AGENTS.ledger.md AGENTS.md); rc=$?
+check_rc 0 "$rc" "ledger rerun after removal: exits 0"
+check_contains "removed after an earlier clean audit" "$out" "ledger rerun after removal: noted"
+out=$(run "$d" --ledger 2>&1); rc=$?
+check_rc 2 "$rc" "ledger flag without a path: exits 2"
+# Auditing the ledger as the file once printed "removed, the work is done" with no AGENTS.md written.
+printf '| kind | fact | source | ran |\n|---|---|---|---|\n' > "$d/AGENTS.ledger.md"
+out=$(run "$d" --ledger AGENTS.ledger.md AGENTS.ledger.md 2>&1); rc=$?
+check_rc 2 "$rc" "ledger as the file: exits 2"
+[[ -e $d/AGENTS.ledger.md ]] && ok "ledger as the file: ledger kept" || nope "ledger as the file: ledger kept" "$out"
+
+# Editing a tracked repo file fails.
+d=$tmp/ledger-gates
+write_agents "$d" '# Demo
+
+## Commands
+
+- Test: `go test ./...`'
+printf 'x\n' > "$d/README.md"
+printf '| kind | fact | source | ran |\n|---|---|---|---|\n| command | `go test ./...` | Makefile:3 | 0 |\n' > "$d/AGENTS.ledger.md"
+gitinit "$d"
+printf 'y\n' > "$d/README.md"
+out=$(run "$d" --ledger AGENTS.ledger.md AGENTS.md); rc=$?
+check_rc 1 "$rc" "repo edit: exits 1"
+check_contains "repository file modified: README.md" "$out" "repo edit: reported"
+check_absent "repository file modified: AGENTS" "$out" "repo edit: own files allowed"
 
 # Static guard against bash 4-only idioms.
 if grep -qE 'declare -A|declare -n|mapfile|readarray|local -n|&>>|coproc|wait -n|\$\{[A-Za-z_][A-Za-z0-9_]*(\^\^?|,,?|@[QEPAa])' "$audit"; then

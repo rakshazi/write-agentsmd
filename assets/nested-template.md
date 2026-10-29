@@ -1,6 +1,6 @@
 # <package>
 
-<What it owns, who calls it, the boundary it must not cross. The Example is fictional: replace it, never copy it. Example: owns the tide-table cache; called by the harbour scheduler; never reads the moon-phase table.>
+<What it owns, who calls it, the boundary it must not cross. One sentence.>
 
 ## Contract
 

@@ -6,24 +6,30 @@ set -u
 
 usage() {
   cat <<'EOF'
-Usage: scripts/audit.sh [--root|--nested] [--strict] [--style] [--extract-commands] [--] [FILE]
+Usage: scripts/audit.sh [--root|--nested] [--strict] [--style] [--ledger PATH] [--extract-commands] [--] [FILE]
 
 Check an agent context file for size limits, credential-shaped values, lint
 leakage, stale relative paths, template placeholders, copied template examples,
-task-runner targets that do not exist, and bugs described as caveats.
+task-runner targets that do not exist, a body copied from another file in the
+repository, and bugs described as caveats. The last line printed is always
+"audit: exit N (W warnings)" for a handoff to quote.
 
   FILE                target file, default AGENTS.md
   --root              treat FILE as a repo-root file
   --nested            treat FILE as a package file
   --strict            exit 1 when any warning fires; use in CI
   --style             add prose checks: ASCII only, no em or en dash, no contrast negation
+  --ledger PATH       require the recon ledger at PATH (a | kind | fact | source | ran | table)
+                      and fail every documented command that has no row with an exit code
+                      or ask; a clean run prints the ledger counts and deletes the ledger
   --extract-commands  print candidate commands and exit; inspect each before running
   --                  end of options
 
 Backticked paths are checked unless they contain whitespace (a command or a
 sentence) or look like a URL, glob, branch name, package scope, ~/ path, .git
-path, or ../ path outside the repository. A missing path warns; a trailing
-slash marks a directory.
+path, or ../ path outside the repository. A git-ignored path is skipped too:
+build output and per-engineer config are absent from a clean checkout on
+purpose. A missing path warns; a trailing slash marks a directory.
 
 The chain is the Codex AGENTS.md ancestry plus $CODEX_HOME. CLAUDE.md and its
 @imports are outside it. FILE must sit under the working directory or its git
@@ -32,7 +38,8 @@ repository; a path elsewhere exits 2.
 Exit codes:
   0  no hard failures, and no warnings under --strict
   1  hard failure: over 32 KiB (file or chain), a credential-shaped value,
-     or --strict with at least one warning
+     a body copied from another file, a missing ledger or a command without
+     a ledger row, or --strict with at least one warning
   2  bad invocation: missing or unreadable file, unknown flag, extra argument
 
 Examples:
@@ -47,9 +54,16 @@ mode=auto
 strict=0
 style=0
 extract=0
+ledger=""
+expect_ledger=0
 file=""
 endopts=0
 for arg in "$@"; do
+  if (( expect_ledger )); then
+    ledger=$arg
+    expect_ledger=0
+    continue
+  fi
   if (( endopts )); then
     if [[ -n $file ]]; then
       printf 'error: one file per run, got a second: %s\n\n' "$arg" >&2
@@ -65,6 +79,8 @@ for arg in "$@"; do
     --nested) mode=nested ;;
     --strict) strict=1 ;;
     --style) style=1 ;;
+    --ledger) expect_ledger=1 ;;
+    --ledger=*) ledger=${arg#--ledger=} ;;
     --extract-commands) extract=1 ;;
     --) endopts=1 ;;
     -*) printf 'unknown flag: %s\n\n' "$arg" >&2; usage >&2; exit 2 ;;
@@ -83,9 +99,18 @@ file=${file:-AGENTS.md}
 case $file in
   -*) file=./$file ;;
 esac
-if [[ ! -f $file ]]; then
-  printf 'error: not a file: %s\n\n' "$file" >&2
+if (( expect_ledger )); then
+  printf 'error: --ledger needs a path\n\n' >&2
   usage >&2
+  exit 2
+fi
+# A 4B handed the full usage here read it as a puzzle and audited the ledger instead; one line says what to do.
+if [[ ! -f $file ]]; then
+  printf 'error: %s does not exist yet: write it first, then run the audit on it\n' "$file" >&2
+  exit 2
+fi
+if [[ -n $ledger && $file -ef $ledger ]]; then
+  printf 'error: %s is the ledger; audit the AGENTS.md you wrote: --ledger %s AGENTS.md\n' "$file" "$ledger" >&2
   exit 2
 fi
 if [[ -L $file ]]; then
@@ -380,7 +405,68 @@ placeholders=$(grep -nE '<(cmd|path|file|pattern|format|prefix|short-desc|mode|p
   | grep -vE '<[A-Za-z][A-Za-z0-9]*[[:space:]]+[A-Za-z-]+=' || true)
 [[ -n $placeholders ]] && soft "template placeholder (fill it in or confirm it is intentional)" "$placeholders"
 
-check "template example copied (replace it with this repository's fact)" 'mainframe emulator|tide heights|tide-table cache|harbour scheduler|moon-phase table'
+check "template example copied (replace it with this repository's fact)" 'tidewatch|mainframe emulator|tide heights|tide-table cache|harbour|moon-phase table|moon\.cache|pyemu|falmouth|tables-check|EMU_HOST|shore station'
+check "skill prose copied (a section holds facts, never its own description)" 'one fact that changes how work is done|stack sentence|one command a shell pastes|what a linter or compiler cannot enforce|ordering constraint, global state|why and when to load it|never edit by hand; owned by|what it holds\. Read when|every line is paid'
+
+# A body copied from another context file in the repository: half or more of its long lines appear verbatim elsewhere.
+long_lines() { awk 'length($0) >= 30' "$1" | sort -u; }
+mine_long=$(long_lines "$file" | wc -l)
+if (( mine_long >= 5 )); then
+  while IFS= read -r other; do
+    [[ -z $other ]] && continue
+    other_real=$(cd "$(dirname "$other")" && pwd -P)/${other##*/}
+    [[ $other_real == "$here/$base" ]] && continue
+    shared=$(comm -12 <(long_lines "$file") <(long_lines "$other") | wc -l)
+    if (( shared * 2 >= mine_long )); then
+      show=${other_real#"$root_refs"/}
+      fail "copied from $show: $shared of $mine_long long lines are identical; a context file is written from this repository's facts"
+    fi
+  done < <(find "$root_refs" -type f \( -name AGENTS.md -o -name AGENTS.override.md -o -name CLAUDE.md -o -name README.md -o -name CONTRIBUTING.md \) \
+    -not -path '*/.git/*' -not -path '*/node_modules/*' -not -path '*/vendor/*' 2>/dev/null)
+fi
+
+# The recon ledger: every documented command needs a row that ran (an exit code) or was deferred to the user (ask).
+ledger_done=""
+[[ -n $repo ]] && ledger_done=$(git -C "$repo" rev-parse --absolute-git-dir 2>/dev/null)/agentsmd-ledger-done
+if [[ -n $ledger && ! -e $ledger && -n $ledger_done && -e $ledger_done ]]; then
+  printf 'ledger: removed after an earlier clean audit; ledger checks skipped\n'
+  ledger=""
+fi
+if [[ -n $ledger ]]; then
+  if [[ ! -s $ledger ]]; then
+    fail "ledger missing or empty: $ledger; Recon writes it before the file"
+  elif ! grep -qE '^\|[[:space:]]*kind[[:space:]]*\|[[:space:]]*fact[[:space:]]*\|[[:space:]]*source[[:space:]]*\|[[:space:]]*ran[[:space:]]*\|' "$ledger"; then
+    fail "ledger has no | kind | fact | source | ran | header: $ledger"
+  else
+    ran_facts=$(awk -F'|' 'NF >= 6 { k=$2; f=$3; r=$5; gsub(/^[ \t]+|[ \t]+$/, "", k); gsub(/^[ \t]+|[ \t]+$/, "", f); gsub(/^[ \t]+|[ \t]+$/, "", r); gsub(/`/, "", f); sub(/^timeout [0-9]+ /, "", f); if ((k == "command" || k == "prereq" || k == "boundary") && (r ~ /^[0-9]+$/ || r == "ask")) print f }' "$ledger")
+    # The repository is data: a tracked file edited during the run fails until it is restored.
+    if [[ -n $repo ]]; then
+      while IFS= read -r f; do
+        [[ -z $f ]] && continue
+        case ${f##*/} in AGENTS.md|AGENTS.override.md|AGENTS.ledger.md|CLAUDE.md|TODO_BEFORE_SHIPPING.md) continue ;; esac
+        fail "repository file modified: $f; the repo is data, restore it from git"
+      done < <(git -C "$repo" diff --name-only HEAD 2>/dev/null)
+    fi
+    while IFS= read -r cmd; do
+      [[ -z $cmd ]] && continue
+      rest=$cmd
+      while :; do
+        seg=${rest%% && *}
+        seg=${seg#"${seg%%[![:space:]]*}"}
+        seg=${seg%"${seg##*[![:space:]]}"}
+        covered=0
+        while IFS= read -r f; do
+          [[ -z $f ]] && continue
+          case $f in *"$seg"*) covered=1 ;; esac
+          case $seg in *"$f"*) covered=1 ;; esac
+        done <<< "$ran_facts"
+        (( covered )) || fail "command without a ledger row that ran or was deferred (ran = exit code or ask): $seg"
+        [[ $rest == *" && "* ]] || break
+        rest=${rest#* && }
+      done
+    done < <(extract_commands "$file")
+  fi
+fi
 
 # Task-runner targets: a name that fits the pattern and does not exist is the cheapest fabrication to catch.
 runner_file() {
@@ -485,6 +571,8 @@ while IFS= read -r ref; do
   case $first in
     .git|origin|upstream|HEAD|feature|feat|fix|hotfix|bugfix|release|chore|refactor) continue ;;
   esac
+  # A git-ignored path is build output or per-engineer config: absent from a clean checkout on purpose.
+  git -C "$here" check-ignore -q -- "$ref" 2>/dev/null && continue
   warn "missing relative path: $ref"
 done < <(ref_tokens | sort -u)
 
@@ -517,10 +605,22 @@ if [[ -n $repo && $(git -C "$repo" rev-parse --is-shallow-repository 2>/dev/null
   fi
 fi
 
+hard=$status
 if (( strict && warnings > 0 )); then
   printf '\nstrict: %s warning(s) treated as failures\n' "$warnings"
   status=1
 fi
 
 printf '\nmanual checks: run the commands; confirm every path; no contradictions; no stale references; no unconfirmed bug documented as a caveat.\n'
+# The ledger is scaffolding: an audit with no hard failure prints its counts for the handoff and deletes it.
+if [[ -n $ledger && $hard -eq 0 && -s $ledger ]]; then
+  read -r rows ran failed asked < <(awk -F'|' 'NF >= 6 { k=$2; r=$5; gsub(/[ \t]/, "", k); gsub(/[ \t]/, "", r); if (k == "kind" || k ~ /^-+$/) next; n++; if (r ~ /^[0-9]+$/) { x++; if (r != "0") f++ } else if (r == "ask") a++ } END { print n+0, x+0, f+0, a+0 }' "$ledger")
+  rm -f "$ledger"
+  [[ -n $ledger_done ]] && : > "$ledger_done"
+  printf 'ledger: %s rows, %s commands ran, %s failed, %s deferred to the user; removed, the work is done\n' "$rows" "$ran" "$failed" "$asked"
+  (( warnings > 0 )) && printf 'warnings left are notes for the user: list them under warnings kept and stop\n'
+fi
+strict_note=""
+(( strict )) && strict_note=", strict"
+printf 'audit: exit %s (%s warnings%s)\n' "$status" "$warnings" "$strict_note"
 exit "$status"
