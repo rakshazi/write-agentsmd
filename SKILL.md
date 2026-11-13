@@ -2,7 +2,7 @@
 name: write-agentsmd
 description: "Write, audit, trim, or split a repository's agent instructions: AGENTS.md, CLAUDE.md, nested package files. Use when the user asks to onboard an agent to a repo, make a repo agent-ready, fix an agent that runs the wrong build or test command, review or shrink a context file, or replace /init output, including when they name CLAUDE.md, Codex, or Copilot files."
 metadata:
-  version: "2.0.0"
+  version: "2.0.1"
 license: "GPL-3.0-or-later (code), CC-BY-SA-4.0 (Markdown), CC0-1.0 (assets); see LICENSES/ and REUSE.toml."
 compatibility: "scripts/audit.sh needs bash 3.2+ with POSIX grep, awk, sed, sort, tr, uniq, wc, dirname; git optional. The procedure runs without it. No network."
 ---
@@ -13,7 +13,7 @@ Write the repository's agent context file. Every root line is paid on every task
 
 ## Output
 
-On disk, in this order: `AGENTS.ledger.md` at the repo root while you work (Recon; the first audit without a `fail` line removes it), then `AGENTS.md` at the repo root, nested `AGENTS.md` files when the mode asks for them, and `TODO_BEFORE_SHIPPING.md` when a bug was found. In the reply: the handoff, the last text of the run. Its shape:
+On disk, in this order: `AGENTS.ledger.md` at the repo root while you work (Recon; the first audit without a `fail` line removes it), then `AGENTS.md` at the repo root, nested `AGENTS.md` files when the mode asks for them, and `TODO_BEFORE_SHIPPING.md` when a bug or dead code was found. In the reply: the handoff, the last text of the run. Its shape:
 
 ```
 handoff
@@ -40,7 +40,7 @@ Scope: `AGENTS.md`, nested variants, tool files. A README stays user-facing; an 
 
 - MUST keep a line only when a session without it would run a wrong command or break an invariant.
 - MUST run every documented read-only command before the line exists: from the repo root, as `timeout 120 <cmd>`, once. A command is what a person types: a runner target, a script path, a line from README or CI; a line inside a recipe or script is never a command. The exit code is the fact; a failing command is a row value, never a task to repair. A command that deploys, applies, migrates, restarts, pushes, publishes, installs, deletes, opens an editor or browser, or touches live data gets `ask` and no run.
-- MUST record discovered bugs in `TODO_BEFORE_SHIPPING.md`, one line each: `- <file>:<function>: <trigger> -> <impact>. Fix: <proposal>`. MUST NOT fix them until the AGENTS.md is done. Then fix only items the user names; a question gets a proposal.
+- MUST record discovered bugs and dead code in `TODO_BEFORE_SHIPPING.md`, one line each: `- <file>:<function>: <trigger> -> <impact>. Fix: <proposal>`. MUST NOT fix them until the AGENTS.md is done. Then fix only items the user names; a question gets a proposal.
 - MUST NOT document a bug as a caveat, workaround, or pre-existing issue. See Bugs found.
 - MUST NOT put secrets, tokens, customer data, or credentialed URLs in the file. Name the env var.
 - MUST update the file in the same change as the command, path, or invariant it describes.
@@ -122,7 +122,7 @@ Cut:
 
 Cut whole lines.
 
-## Bugs found
+## Bugs or dead code found
 
 1. Tell the user: file, function, trigger, impact, proposed fix.
 2. Record it in `TODO_BEFORE_SHIPPING.md` at the repo root. Keep the code unchanged until the AGENTS.md is done.
