@@ -1,6 +1,6 @@
 ---
 name: write-agentsmd
-description: "Write, audit, trim, or split a repository's agent instructions: AGENTS.md, CLAUDE.md, nested package files. Use when the user asks to onboard an agent to a repo, make a repo agent-ready, fix an agent that runs the wrong build or test command, review or shrink a context file, or replace /init output, including when they name CLAUDE.md, Codex, or Copilot files."
+description: "Write, audit, trim or split a repo's agent instructions (AGENTS.md, CLAUDE.md, nested files). Use when asked to onboard an agent to a repo, make it agent-ready, fix an agent that runs the wrong build or test command, or shrink a context file or /init output."
 metadata:
   version: "2.0.1"
 license: "GPL-3.0-or-later (code), CC-BY-SA-4.0 (Markdown), CC0-1.0 (assets); see LICENSES/ and REUSE.toml."
